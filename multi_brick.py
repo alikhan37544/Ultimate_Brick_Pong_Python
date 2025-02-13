@@ -1,4 +1,8 @@
 import pygame
+import numpy as np
+from collections import deque
+import tensorflow as tf
+from tensorflow.keras import layers, models, optimizers
 import random
 
 # ---------------------------- CONSTANTS ----------------------------
@@ -30,6 +34,54 @@ BLUE  = (0, 0, 255)
 GRAY  = (200, 200, 200)
 
 # ---------------------------- CLASSES ----------------------------
+class DQNAgent:
+    def __init__(self, state_size, action_size):
+        self.state_size = state_size
+        self.action_size = action_size
+        self.memory = deque(maxlen=2000)
+        self.gamma = 0.95
+        self.epsilon = 1.0
+        self.epsilon_min = 0.01
+        self.epsilon_decay = 0.995
+        self.learning_rate = 0.001
+        self.model = self._build_model()
+    
+    def _build_model(self):
+        model = models.Sequential()
+        model.add(layers.Dense(24, input_dim=self.state_size, activation='relu'))
+        model.add(layers.Dense(24, activation='relu'))
+        model.add(layers.Dense(self.action_size, activation='linear'))
+        model.compile(loss='mse', optimizer=optimizers.Adam(learning_rate=self.learning_rate))
+        return model
+    
+    def remember(self, state, action, reward, next_state, done):
+        self.memory.append((state, action, reward, next_state, done))
+    
+    def act(self, state):
+        if np.random.rand() <= self.epsilon:
+            return random.randrange(self.action_size)
+        state = np.reshape(state, [1, self.state_size])
+        act_values = self.model.predict(state, verbose=0)
+        return np.argmax(act_values[0])
+    
+    def replay(self, batch_size):
+        minibatch = random.sample(self.memory, batch_size)
+        for state, action, reward, next_state, done in minibatch:
+            target = reward
+            if not done:
+                next_state = np.reshape(next_state, [1, self.state_size])
+                target = reward + self.gamma * np.amax(self.model.predict(next_state, verbose=0)[0])
+            state = np.reshape(state, [1, self.state_size])
+            target_f = self.model.predict(state, verbose=0)
+            target_f[0][action] = target
+            self.model.fit(state, target_f, epochs=1, verbose=0)
+        if self.epsilon > self.epsilon_min:
+            self.epsilon *= self.epsilon_decay
+    
+    def save_model(self, filename):
+        self.model.save_weights(filename)
+
+
 class Paddle:
     def __init__(self, x, y):
         self.rect = pygame.Rect(x, y, PADDLE_WIDTH, PADDLE_HEIGHT)
@@ -42,14 +94,46 @@ class Paddle:
             self.rect.right = SCREEN_WIDTH
 
 class AIPaddle(Paddle):
-    def update(self, balls):
-        # Simple AI: move toward the ball closest (horizontally) to the paddle's center.
-        if balls:
-            target = min(balls, key=lambda b: abs(b.rect.centerx - self.rect.centerx))
-            if target.rect.centerx < self.rect.centerx:
-                self.move(-PADDLE_SPEED)
-            elif target.rect.centerx > self.rect.centerx:
-                self.move(PADDLE_SPEED)
+    def __init__(self, x, y):
+        super().__init__(x, y)
+        self.state_size = 5  # [ball_x, ball_y, ball_vx, ball_vy, paddle_x]
+        self.action_size = 3  # 0:left, 1:stay, 2:right
+        self.agent = DQNAgent(self.state_size, self.action_size)
+        self.last_state = None
+        self.last_action = None
+        self.current_reward = 0
+        self.total_reward = 0
+
+    def get_state(self, balls):
+        if not balls:
+            return np.zeros(self.state_size)
+        closest_ball = min(balls, key=lambda b: abs(b.rect.centery - self.rect.centery))
+        return np.array([
+            closest_ball.rect.centerx / SCREEN_WIDTH,
+            closest_ball.rect.centery / SCREEN_HEIGHT,
+            closest_ball.vx / INITIAL_BALL_SPEED,
+            closest_ball.vy / INITIAL_BALL_SPEED,
+            self.rect.centerx / SCREEN_WIDTH
+        ])
+    
+    def update(self, balls, done):
+        state = self.get_state(balls)
+        
+        if self.last_state is not None:
+            self.agent.remember(self.last_state, self.last_action, 
+                              self.current_reward, state, done)
+        
+        action = self.agent.act(state)
+        self.last_state = state
+        self.last_action = action
+        
+        # Take action
+        if action == 0:
+            self.move(-PADDLE_SPEED)
+        elif action == 2:
+            self.move(PADDLE_SPEED)
+            
+        self.current_reward = 0  # Reset reward after recording
 
 class Ball:
     def __init__(self, x, y):
@@ -139,6 +223,12 @@ def main():
     player_paddle = Paddle((SCREEN_WIDTH - PADDLE_WIDTH) // 2, SCREEN_HEIGHT - 40)
     ai_paddle = AIPaddle((SCREEN_WIDTH - PADDLE_WIDTH) // 2, 20)
 
+    # Training parameters
+    training = True  # Set to False to disable training
+    batch_size = 32
+    total_episodes = 0
+    model_save_path = "brick_breaker_rl.h5"
+
     # Initialize game state
     player_lives = 3
     ai_lives = 3
@@ -165,7 +255,25 @@ def main():
             player_paddle.move(PADDLE_SPEED)
 
         # ---------------------------- AI UPDATE ----------------------------
-        ai_paddle.update(balls)
+        ai_done = False
+        # Calculate reward
+        ai_paddle.current_reward = -0.1  # Small penalty per frame
+        
+        # Check for ball collisions with AI paddle
+        for ball in balls:
+            if ball.rect.colliderect(ai_paddle.rect):
+                ai_paddle.current_reward += 2  # Positive reward for hitting
+        
+        # Check for missed balls
+        if any(ball.rect.top <= 0 for ball in balls):
+            ai_paddle.current_reward -= 10  # Big penalty for missing
+            ai_done = True
+
+        ai_paddle.update(balls, ai_done)
+        
+        # Experience replay
+        if training and len(ai_paddle.agent.memory) > batch_size:
+            ai_paddle.agent.replay(batch_size)
 
         # ---------------------------- UPDATE BALLS ----------------------------
         # Iterate over a copy of the list since we may reset mid-loop
@@ -262,6 +370,9 @@ def main():
 
         # ---------------------------- GAME OVER CHECK ----------------------------
         if player_lives <= 0 or ai_lives <= 0:
+            if training:
+                ai_paddle.agent.save_model(model_save_path)
+                print(f"Model saved to {model_save_path}")
             running = False
 
     # Display a game over message.
