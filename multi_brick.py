@@ -1,8 +1,5 @@
 import pygame
 import numpy as np
-from collections import deque
-import tensorflow as tf
-from tensorflow.keras import layers, models, optimizers
 import random
 
 # ---------------------------- CONSTANTS ----------------------------
@@ -34,54 +31,6 @@ BLUE  = (0, 0, 255)
 GRAY  = (200, 200, 200)
 
 # ---------------------------- CLASSES ----------------------------
-class DQNAgent:
-    def __init__(self, state_size, action_size):
-        self.state_size = state_size
-        self.action_size = action_size
-        self.memory = deque(maxlen=2000)
-        self.gamma = 0.95
-        self.epsilon = 1.0
-        self.epsilon_min = 0.01
-        self.epsilon_decay = 0.995
-        self.learning_rate = 0.001
-        self.model = self._build_model()
-    
-    def _build_model(self):
-        model = models.Sequential()
-        model.add(layers.Dense(24, input_dim=self.state_size, activation='relu'))
-        model.add(layers.Dense(24, activation='relu'))
-        model.add(layers.Dense(self.action_size, activation='linear'))
-        model.compile(loss='mse', optimizer=optimizers.Adam(learning_rate=self.learning_rate))
-        return model
-    
-    def remember(self, state, action, reward, next_state, done):
-        self.memory.append((state, action, reward, next_state, done))
-    
-    def act(self, state):
-        if np.random.rand() <= self.epsilon:
-            return random.randrange(self.action_size)
-        state = np.reshape(state, [1, self.state_size])
-        act_values = self.model.predict(state, verbose=0)
-        return np.argmax(act_values[0])
-    
-    def replay(self, batch_size):
-        minibatch = random.sample(self.memory, batch_size)
-        for state, action, reward, next_state, done in minibatch:
-            target = reward
-            if not done:
-                next_state = np.reshape(next_state, [1, self.state_size])
-                target = reward + self.gamma * np.amax(self.model.predict(next_state, verbose=0)[0])
-            state = np.reshape(state, [1, self.state_size])
-            target_f = self.model.predict(state, verbose=0)
-            target_f[0][action] = target
-            self.model.fit(state, target_f, epochs=1, verbose=0)
-        if self.epsilon > self.epsilon_min:
-            self.epsilon *= self.epsilon_decay
-    
-    def save_model(self, filename):
-        self.model.save_weights(filename)
-
-
 class Paddle:
     def __init__(self, x, y):
         self.rect = pygame.Rect(x, y, PADDLE_WIDTH, PADDLE_HEIGHT)
@@ -94,53 +43,28 @@ class Paddle:
             self.rect.right = SCREEN_WIDTH
 
 class AIPaddle(Paddle):
+    """
+    A simple AI that tracks the closest ball horizontally.
+    """
     def __init__(self, x, y):
         super().__init__(x, y)
-        self.state_size = 5  # [ball_x, ball_y, ball_vx, ball_vy, paddle_x]
-        self.action_size = 3  # 0:left, 1:stay, 2:right
-        self.agent = DQNAgent(self.state_size, self.action_size)
-        self.last_state = None
-        self.last_action = None
-        self.current_reward = 0
-        self.total_reward = 0
 
-    def get_state(self, balls):
-        if not balls:
-            return np.zeros(self.state_size)
-        closest_ball = min(balls, key=lambda b: abs(b.rect.centery - self.rect.centery))
-        return np.array([
-            closest_ball.rect.centerx / SCREEN_WIDTH,
-            closest_ball.rect.centery / SCREEN_HEIGHT,
-            closest_ball.vx / INITIAL_BALL_SPEED,
-            closest_ball.vy / INITIAL_BALL_SPEED,
-            self.rect.centerx / SCREEN_WIDTH
-        ])
-    
-    def update(self, balls, done):
-        state = self.get_state(balls)
-        
-        if self.last_state is not None:
-            self.agent.remember(self.last_state, self.last_action, 
-                              self.current_reward, state, done)
-        
-        action = self.agent.act(state)
-        self.last_state = state
-        self.last_action = action
-        
-        # Take action
-        if action == 0:
-            self.move(-PADDLE_SPEED)
-        elif action == 2:
-            self.move(PADDLE_SPEED)
-            
-        self.current_reward = 0  # Reset reward after recording
+    def update(self, balls):
+        if balls:
+            # Choose the ball that is closest vertically to the AI paddle
+            closest_ball = min(balls, key=lambda b: abs(b.rect.centery - self.rect.centery))
+            # Move towards the ball's x position
+            if closest_ball.rect.centerx < self.rect.centerx:
+                self.move(-PADDLE_SPEED)
+            elif closest_ball.rect.centerx > self.rect.centerx:
+                self.move(PADDLE_SPEED)
 
 class Ball:
     def __init__(self, x, y):
-        # The ball's position is stored in a Rect for simplicity.
+        # Create a rect for collision simplicity
         self.rect = pygame.Rect(x, y, BALL_RADIUS * 2, BALL_RADIUS * 2)
         self.vx = random.choice([-1, 1]) * INITIAL_BALL_SPEED
-        # Launch upward if starting from the bottom paddle, downward if from the top.
+        # If the ball spawns from the bottom (player side), launch upward.
         self.vy = -INITIAL_BALL_SPEED if y > SCREEN_HEIGHT / 2 else INITIAL_BALL_SPEED
 
     def update(self):
@@ -151,8 +75,8 @@ class Brick:
     def __init__(self, x, y, brick_type):
         self.rect = pygame.Rect(x, y, BRICK_WIDTH, BRICK_HEIGHT)
         self.type = brick_type
-        # Define brick properties based on type:
-        # Type 1: normal brick (1 hit), Type 2: hard brick (3 hits), Type 3: permanent brick (never breaks)
+        # Brick types:
+        # 1: normal brick (1 hit), 2: hard brick (3 hits), 3: permanent brick (never breaks)
         if brick_type == 1:
             self.hits = 1
             self.color = BLUE
@@ -160,16 +84,16 @@ class Brick:
             self.hits = 3
             self.color = RED
         elif brick_type == 3:
-            self.hits = -1  # indicates an unbreakable brick
+            self.hits = -1  # unbreakable
             self.color = GRAY
 
     def hit(self):
         if self.hits > 0:
             self.hits -= 1
             if self.hits == 0:
-                return True  # brick should be removed
+                return True  # remove brick
             else:
-                # Darken the color slightly to indicate damage (simple approach)
+                # Darken the color a bit to indicate damage
                 self.color = (max(self.color[0]-50, 0),
                               max(self.color[1]-50, 0),
                               max(self.color[2]-50, 0))
@@ -181,7 +105,7 @@ def create_bricks():
     # Center the brick grid horizontally
     total_width = BRICK_COLS * BRICK_WIDTH + (BRICK_COLS - 1) * BRICK_GAP
     offset_x = (SCREEN_WIDTH - total_width) // 2
-    offset_y = 50  # start a bit from the top
+    offset_y = 50  # some offset from the top
     for row in range(BRICK_ROWS):
         for col in range(BRICK_COLS):
             if random.random() < 0.7:  # 70% chance to place a brick
@@ -193,8 +117,8 @@ def create_bricks():
     return bricks
 
 def reset_level():
-    """Resets the ball list to a single ball (from the player’s paddle) and regenerates the brick layout."""
-    global balls, last_ball_mult_time, bricks
+    """Reset the ball list to a single ball and regenerate the brick layout."""
+    global balls, bricks, last_ball_mult_time
     # Position the new ball above the player's paddle
     balls = [Ball(player_paddle.rect.centerx - BALL_RADIUS, player_paddle.rect.top - BALL_RADIUS * 2)]
     last_ball_mult_time = pygame.time.get_ticks()
@@ -209,7 +133,7 @@ def main():
     pygame.display.set_caption("Brick Versus")
     clock = pygame.time.Clock()
 
-    # Load sound effects (ensure these files are available in your working directory)
+    # Load sound effects (make sure these files are in your working directory)
     try:
         hit_sound = pygame.mixer.Sound("hit.wav")
         brick_sound = pygame.mixer.Sound("brick.wav")
@@ -223,22 +147,17 @@ def main():
     player_paddle = Paddle((SCREEN_WIDTH - PADDLE_WIDTH) // 2, SCREEN_HEIGHT - 40)
     ai_paddle = AIPaddle((SCREEN_WIDTH - PADDLE_WIDTH) // 2, 20)
 
-    # Training parameters
-    training = True  # Set to False to disable training
-    batch_size = 32
-    total_episodes = 0
-    model_save_path = "brick_breaker_rl.h5"
-
-    # Initialize game state
     player_lives = 3
     ai_lives = 3
     score = 0
 
-    # Start with one ball and create the initial brick layout.
+    # Initialize ball and brick layout
     balls = [Ball(player_paddle.rect.centerx - BALL_RADIUS, player_paddle.rect.top - BALL_RADIUS * 2)]
     bricks = create_bricks()
     last_ball_mult_time = pygame.time.get_ticks()
-    ball_mult_interval = 15000  # milliseconds between ball multiplications
+    ball_mult_interval = 30000  # milliseconds between ball multiplications (30 seconds)
+
+    font = pygame.font.SysFont("Arial", 20)
 
     running = True
     while running:
@@ -255,28 +174,9 @@ def main():
             player_paddle.move(PADDLE_SPEED)
 
         # ---------------------------- AI UPDATE ----------------------------
-        ai_done = False
-        # Calculate reward
-        ai_paddle.current_reward = -0.1  # Small penalty per frame
-        
-        # Check for ball collisions with AI paddle
-        for ball in balls:
-            if ball.rect.colliderect(ai_paddle.rect):
-                ai_paddle.current_reward += 2  # Positive reward for hitting
-        
-        # Check for missed balls
-        if any(ball.rect.top <= 0 for ball in balls):
-            ai_paddle.current_reward -= 10  # Big penalty for missing
-            ai_done = True
-
-        ai_paddle.update(balls, ai_done)
-        
-        # Experience replay
-        if training and len(ai_paddle.agent.memory) > batch_size:
-            ai_paddle.agent.replay(batch_size)
+        ai_paddle.update(balls)
 
         # ---------------------------- UPDATE BALLS ----------------------------
-        # Iterate over a copy of the list since we may reset mid-loop
         for ball in balls:
             ball.update()
 
@@ -293,7 +193,7 @@ def main():
                 if lost_sound:
                     lost_sound.play()
                 reset_level()
-                break  # break out of the ball loop to avoid multiple life losses
+                break  # exit ball loop to avoid multiple losses
             if ball.rect.bottom >= SCREEN_HEIGHT:
                 # Ball missed by the player – player loses a life.
                 player_lives -= 1
@@ -305,7 +205,6 @@ def main():
             # Collision with player paddle (only when the ball is moving downward)
             if ball.rect.colliderect(player_paddle.rect) and ball.vy > 0:
                 ball.vy = -abs(ball.vy)
-                # Adjust horizontal speed based on where the ball hit the paddle.
                 offset = (ball.rect.centerx - player_paddle.rect.centerx) / (PADDLE_WIDTH / 2)
                 ball.vx = INITIAL_BALL_SPEED * offset
                 if hit_sound:
@@ -322,23 +221,21 @@ def main():
             # Collision with bricks
             for brick in bricks[:]:
                 if ball.rect.colliderect(brick.rect):
-                    # A simple collision response: reverse the vertical direction.
-                    ball.vy = -ball.vy
+                    ball.vy = -ball.vy  # simple vertical bounce
                     if brick_sound:
                         brick_sound.play()
                     if brick.hit():
                         bricks.remove(brick)
                         score += 10
-                    break  # avoid multiple collisions for one ball in a single frame
+                    break  # prevent multiple collisions in one update
 
         # ---------------------------- BALL MULTIPLICATION ----------------------------
         current_time = pygame.time.get_ticks()
         if current_time - last_ball_mult_time > ball_mult_interval:
-            # For each current ball, spawn an extra ball with a slight variation.
             new_balls = []
             for ball in balls:
                 new_ball = Ball(ball.rect.x, ball.rect.y)
-                new_ball.vx = -ball.vx  # Invert x-velocity to vary the trajectory.
+                new_ball.vx = -ball.vx  # Invert x-velocity to vary the trajectory
                 new_ball.vy = ball.vy
                 new_balls.append(new_ball)
             balls.extend(new_balls)
@@ -360,19 +257,20 @@ def main():
             pygame.draw.ellipse(screen, WHITE, ball.rect)
 
         # Draw scoreboard (score and lives)
-        font = pygame.font.SysFont("Arial", 20)
         score_text = font.render(f"Score: {score}", True, WHITE)
         lives_text = font.render(f"Player Lives: {player_lives}   AI Lives: {ai_lives}", True, WHITE)
         screen.blit(score_text, (10, SCREEN_HEIGHT - 30))
         screen.blit(lives_text, (10, SCREEN_HEIGHT - 60))
 
+        # Draw ball multiplication timer
+        time_remaining = max(0, (ball_mult_interval - (current_time - last_ball_mult_time)) / 1000)
+        timer_text = font.render(f"Balls multiply in: {time_remaining:.1f}s", True, WHITE)
+        screen.blit(timer_text, (SCREEN_WIDTH - 250, SCREEN_HEIGHT - 30))
+
         pygame.display.flip()
 
         # ---------------------------- GAME OVER CHECK ----------------------------
         if player_lives <= 0 or ai_lives <= 0:
-            if training:
-                ai_paddle.agent.save_model(model_save_path)
-                print(f"Model saved to {model_save_path}")
             running = False
 
     # Display a game over message.
