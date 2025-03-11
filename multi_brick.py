@@ -20,8 +20,8 @@ BALL_RADIUS = 10
 INITIAL_BALL_SPEED = 5
 
 # Brick properties
-BRICK_ROWS = 6
-BRICK_COLS = 10
+BRICK_ROWS = 10  # Increased from 6
+BRICK_COLS = 14  # Increased from 10
 BRICK_WIDTH = 70
 BRICK_HEIGHT = 30
 BRICK_GAP = 5
@@ -70,6 +70,7 @@ class Ball:
         self.vx = random.choice([-1, 1]) * INITIAL_BALL_SPEED
         self.vy = vy_direction * INITIAL_BALL_SPEED
         self.trail = []  # Store previous positions for trail effect
+        self.last_hit_by = "player" if vy_direction < 0 else "ai"  # Track who last hit the ball
 
     def update(self):
         # Store current position for trail
@@ -159,10 +160,11 @@ class Brick:
 
 # Update the PowerUp class
 class PowerUp:
-    def __init__(self, x, y):
+    def __init__(self, x, y, direction="down"):
         self.rect = pygame.Rect(x - 15, y - 15, 30, 30)
-        self.type = random.choice(["speed", "size", "multi", "life", "laser", "slow"])  # Added new types
-        self.vy = 2  # Falling speed
+        self.type = random.choice(["speed", "size", "multi", "life", "laser", "slow"])
+        self.vy = 2 if direction == "down" else -2  # Direction of movement
+        self.direction = direction  # "down" (toward player) or "up" (toward AI)
         self.pulse = 0  # For pulsing effect
         self.pulse_dir = 1
         
@@ -187,41 +189,63 @@ class PowerUp:
         if self.pulse >= 1.0 or self.pulse <= 0.0:
             self.pulse_dir *= -1
         
-    def apply(self, player_paddle, ai_paddle, balls):
+    def apply(self, player_paddle, ai_paddle, balls, collector="player"):
+        # Initialize extra lives
+        extra_player_lives = 0
+        extra_ai_lives = 0
+        
         if self.type == "speed":
             # Increase ball speed
             for ball in balls:
                 ball.vx *= 1.1
                 ball.vy *= 1.1
         elif self.type == "size":
-            # Increase paddle size
-            player_paddle.rect.width = min(PADDLE_WIDTH * 2, player_paddle.rect.width * 1.2)
+            # Increase paddle size of the collector only
+            if collector == "player":
+                player_paddle.rect.width = min(PADDLE_WIDTH * 2, player_paddle.rect.width * 1.2)
+            else:
+                ai_paddle.rect.width = min(PADDLE_WIDTH * 2, ai_paddle.rect.width * 1.2)
         elif self.type == "multi":
             # Add a new ball
             if balls:
                 new_ball = Ball(balls[0].rect.centerx, balls[0].rect.centery, 
-                              -1 if balls[0].vy > 0 else 1)
+                              -1 if collector == "player" else 1)
+                new_ball.last_hit_by = collector
                 balls.append(new_ball)
         elif self.type == "life":
-            # Add a life
-            return 1
+            # Add a life only for the collector
+            if collector == "player":
+                extra_player_lives = 1
+            else:
+                extra_ai_lives = 1
         elif self.type == "laser":
-            # Add laser effect
-            effects.append({
-                "type": "laser", 
-                "x": player_paddle.rect.centerx, 
-                "y": player_paddle.rect.top,
-                "width": 5,
-                "height": player_paddle.rect.top,
-                "life": 60,
-                "color": (50, 150, 255)
-            })
+            # Add laser effect for the appropriate paddle
+            if collector == "player":
+                effects.append({
+                    "type": "laser", 
+                    "x": player_paddle.rect.centerx, 
+                    "y": player_paddle.rect.top,
+                    "width": 5,
+                    "height": player_paddle.rect.top,
+                    "life": 60,
+                    "color": (50, 150, 255)
+                })
+            else:
+                effects.append({
+                    "type": "laser", 
+                    "x": ai_paddle.rect.centerx, 
+                    "y": ai_paddle.rect.bottom,
+                    "width": 5,
+                    "height": SCREEN_HEIGHT - ai_paddle.rect.bottom,
+                    "life": 60,
+                    "color": (255, 50, 50)
+                })
         elif self.type == "slow":
             # Slow down balls temporarily
             for ball in balls:
                 ball.vx *= 0.7
                 ball.vy *= 0.7
-        return 0
+        return extra_player_lives, extra_ai_lives
 
 # ---------------------------- HELPER FUNCTIONS ----------------------------
 # Update the create_bricks function for more interesting layouts:
@@ -253,17 +277,32 @@ def create_bricks(level=1):
                 if (row + col) % 2 == 0:
                     x = offset_x + col * (BRICK_WIDTH + BRICK_GAP)
                     y = offset_y + row * (BRICK_HEIGHT + BRICK_GAP)
-                    brick_type = random.choices([1, 2, 3], weights=[40, 40, 20])[0]
+                    
+                    # Make sure outer edge bricks are always breakable
+                    if row == 0 or row == BRICK_ROWS-1 or col == 0 or col == BRICK_COLS-1:
+                        brick_type = random.choices([1, 2], weights=[70, 30])[0]  # Only breakable types
+                    else:
+                        # Inner bricks can sometimes be unbreakable, but with reduced chance
+                        brick_type = random.choices([1, 2, 3], weights=[50, 40, 10])[0]
+                        
                     bricks.append(Brick(x, y, brick_type))
     
     elif layout_type == 2:  # Fortress pattern with more unbreakable bricks
         for row in range(BRICK_ROWS):
             for col in range(BRICK_COLS):
                 if row == 0 or row == BRICK_ROWS-1 or col == 0 or col == BRICK_COLS-1:
-                    # Create border of tough bricks
+                    # Create border of tough but always breakable bricks
                     x = offset_x + col * (BRICK_WIDTH + BRICK_GAP)
                     y = offset_y + row * (BRICK_HEIGHT + BRICK_GAP)
-                    brick_type = random.choices([2, 3], weights=[30, 70])[0]
+                    # Make sure there's at least one breakable brick on each side
+                    if (row == 0 and col == BRICK_COLS//2) or \
+                       (row == BRICK_ROWS-1 and col == BRICK_COLS//2) or \
+                       (col == 0 and row == BRICK_ROWS//2) or \
+                       (col == BRICK_COLS-1 and row == BRICK_ROWS//2):
+                        brick_type = 1  # Always easy breakable brick as entry point
+                    else:
+                        # Other border bricks - still mostly breakable
+                        brick_type = random.choices([1, 2, 3], weights=[20, 60, 20])[0]
                     bricks.append(Brick(x, y, brick_type))
                 elif random.random() < 0.6:  # Interior bricks
                     x = offset_x + col * (BRICK_WIDTH + BRICK_GAP)
@@ -318,6 +357,7 @@ def create_bricks(level=1):
 
 def reset_level(player_paddle, ai_paddle, level=1):
     global balls, bricks, last_ball_mult_time, power_ups, effects
+    global breakable_brick_count, level_reset_timer, level_reset_active
     
     # Clear any existing power-ups and effects
     power_ups = []
@@ -334,6 +374,13 @@ def reset_level(player_paddle, ai_paddle, level=1):
     
     # Create bricks with level-specific patterns
     bricks = create_bricks(level)
+    
+    # Count breakable bricks (bricks with hits > 0)
+    breakable_brick_count = sum(1 for brick in bricks if brick.hits > 0)
+    
+    # Reset level timer
+    level_reset_timer = 0
+    level_reset_active = False
 
 def draw_side_panel(screen, font, metrics):
     # Draw the background for the side panel.
@@ -351,6 +398,7 @@ def draw_side_panel(screen, font, metrics):
 # ---------------------------- MAIN GAME LOOP ----------------------------
 def main():
     global balls, last_ball_mult_time, bricks
+    global breakable_brick_count, level_reset_timer, level_reset_active
 
     pygame.init()
     screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
@@ -474,6 +522,7 @@ def main():
                 ball.vx = INITIAL_BALL_SPEED * offset * 1.5
                 # Reposition ball above paddle
                 ball.rect.bottom = player_paddle.rect.top
+                ball.last_hit_by = "player"  # Set last hit by player
                 if hit_sound:
                     hit_sound.play()
 
@@ -484,6 +533,7 @@ def main():
                 ball.vx = INITIAL_BALL_SPEED * offset * 1.5
                 # Reposition ball below paddle
                 ball.rect.top = ai_paddle.rect.bottom
+                ball.last_hit_by = "ai"  # Set last hit by AI
                 if hit_sound:
                     hit_sound.play()
 
@@ -519,7 +569,7 @@ def main():
                         bricks.remove(brick)
                         score += 10 * level
                         # Create enhanced particle effect
-                        for _ in range(15):  # More particles
+                        for _ in range(15):
                             effects.append({
                                 "type": "particle",
                                 "x": brick.rect.centerx,
@@ -527,12 +577,13 @@ def main():
                                 "vx": random.uniform(-4, 4),
                                 "vy": random.uniform(-4, 4),
                                 "life": 40,
-                                "size": random.randint(2, 6),  # Variable sizes
+                                "size": random.randint(2, 6),
                                 "color": brick.color
                             })
-                        # Chance to spawn power-up
-                        if random.random() < 0.25:  # Slightly higher chance
-                            power_ups.append(PowerUp(brick.rect.centerx, brick.rect.centery))
+                        # Chance to spawn power-up in the direction of the last player who hit the ball
+                        if random.random() < 0.25:
+                            direction = "down" if ball.last_hit_by == "player" else "up"
+                            power_ups.append(PowerUp(brick.rect.centerx, brick.rect.centery, direction))
                     break
 
         # Add this to the main game loop, before drawing:
@@ -547,16 +598,26 @@ def main():
             power_up.update()
             
             # Check if power-up is collected by player
-            if power_up.rect.colliderect(player_paddle.rect):
-                extra_life = power_up.apply(player_paddle, ai_paddle, balls)
-                player_lives += extra_life
+            if power_up.rect.colliderect(player_paddle.rect) and power_up.direction == "down":
+                player_bonus, _ = power_up.apply(player_paddle, ai_paddle, balls, "player")
+                player_lives += player_bonus
+                power_ups.remove(power_up)
+                if powerup_sound:
+                    powerup_sound.play()
+                continue
+                
+            # Check if power-up is collected by AI
+            if power_up.rect.colliderect(ai_paddle.rect) and power_up.direction == "up":
+                _, ai_bonus = power_up.apply(player_paddle, ai_paddle, balls, "ai")
+                ai_lives += ai_bonus
                 power_ups.remove(power_up)
                 if powerup_sound:
                     powerup_sound.play()
                 continue
                 
             # Remove if off-screen
-            if power_up.rect.top > SCREEN_HEIGHT:
+            if (power_up.direction == "down" and power_up.rect.top > SCREEN_HEIGHT) or \
+               (power_up.direction == "up" and power_up.rect.bottom < 0):
                 power_ups.remove(power_up)
 
         # --- Update visual effects ---
@@ -568,6 +629,12 @@ def main():
             elif effect["type"] == "particle":
                 effect["x"] += effect["vx"]
                 effect["y"] += effect["vy"]
+                effect["life"] -= 1
+                if effect["life"] <= 0:
+                    effects.remove(effect)
+            elif effect["type"] == "text":
+                text_surface = large_font.render(effect["text"], True, effect["color"])
+                screen.blit(text_surface, (effect["x"] - text_surface.get_width()//2, effect["y"]))
                 effect["life"] -= 1
                 if effect["life"] <= 0:
                     effects.remove(effect)
@@ -591,6 +658,39 @@ def main():
                 new_balls.append(new_ball)
             balls.extend(new_balls)
             last_ball_mult_time = current_time
+
+        # Calculate remaining breakable bricks
+        current_breakable_count = sum(1 for brick in bricks if brick.hits > 0)
+
+        # Check if 80% of breakable bricks are cleared
+        if not level_reset_active and breakable_brick_count > 0:
+            if current_breakable_count <= 0.2 * breakable_brick_count:
+                level_reset_active = True
+                level_reset_timer = current_time
+                # Create a visual notification
+                effects.append({
+                    "type": "text",
+                    "text": "Level Advancing in 30s",
+                    "x": GAME_WIDTH // 2,
+                    "y": SCREEN_HEIGHT // 2,
+                    "life": 180,
+                    "size": 40,
+                    "color": (255, 255, 0)
+                })
+
+        # If timer is active, check if it's been 30 seconds
+        if level_reset_active:
+            time_to_next = max(0, 30 - (current_time - level_reset_timer) // 1000)
+            
+            # Add countdown to metrics
+            metrics["Next Level In"] = f"{time_to_next}s"
+            
+            if current_time - level_reset_timer >= 30000:  # 30 seconds
+                level += 1
+                reset_level(player_paddle, ai_paddle, level)
+                # Reset paddle size for new level
+                player_paddle.rect.width = PADDLE_WIDTH
+                ai_paddle.rect.width = PADDLE_WIDTH
 
         # --- Prepare AI Metrics for Side Panel ---
         # Determine the AI's target ball and its decision
@@ -669,6 +769,12 @@ def main():
                     glow_color = (effect["color"][0], effect["color"][1], effect["color"][2], 150 - w*15)
                     pygame.draw.rect(screen, glow_color, 
                                    pygame.Rect(effect["x"] - (effect["width"] + w)//2, 0, effect["width"] + w, effect["y"]))
+            elif effect["type"] == "text":
+                text_surface = large_font.render(effect["text"], True, effect["color"])
+                screen.blit(text_surface, (effect["x"] - text_surface.get_width()//2, effect["y"]))
+                effect["life"] -= 1
+                if effect["life"] <= 0:
+                    effects.remove(effect)
 
         # Draw power-ups with glowing effect
         for power_up in power_ups:
