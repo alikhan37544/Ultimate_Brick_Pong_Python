@@ -176,7 +176,8 @@ class Brick:
 class PowerUp:
     def __init__(self, x, y, direction="down"):
         self.rect = pygame.Rect(x - 15, y - 15, 30, 30)
-        self.type = random.choice(["speed", "size", "multi", "life", "laser", "slow"])
+        # Update powerup types: replaced "life" with "score"
+        self.type = random.choice(["speed", "size", "multi", "score", "laser", "slow"])
         self.vy = 2 if direction == "down" else -2  # Direction of movement
         self.direction = direction  # "down" (toward player) or "up" (toward AI)
         self.pulse = 0  # For pulsing effect
@@ -189,7 +190,7 @@ class PowerUp:
             self.color = (0, 255, 0)    # Green
         elif self.type == "multi":
             self.color = (255, 0, 255)  # Purple
-        elif self.type == "life":
+        elif self.type == "score":      # Changed from "life" to "score", new color
             self.color = (255, 128, 0)  # Orange
         elif self.type == "laser":
             self.color = (50, 150, 255) # Light blue
@@ -204,9 +205,10 @@ class PowerUp:
             self.pulse_dir *= -1
         
     def apply(self, player_paddle, ai_paddle, balls, collector="player"):
-        # Initialize extra lives
+        # Initialize extra lives and scores
         extra_player_lives = 0
         extra_ai_lives = 0
+        score_bonus = 0
         
         # Create notification text
         notification_text = f"{collector.upper()} got {self.type.upper()}!"
@@ -240,40 +242,83 @@ class PowerUp:
                               -1 if collector == "player" else 1)
                 new_ball.last_hit_by = collector
                 balls.append(new_ball)
-        elif self.type == "life":
-            # Add a life only for the collector
-            if collector == "player":
-                extra_player_lives = 1
-            else:
-                extra_ai_lives = 1
+        elif self.type == "score":
+            # Add score bonus (replaces life powerup)
+            score_bonus = 20  # 20 points bonus
+            effects.append({
+                "type": "text",
+                "text": "+20 POINTS!",
+                "x": GAME_WIDTH // 2,
+                "y": SCREEN_HEIGHT // 2 + 40,
+                "life": 120,
+                "color": notification_color
+            })
         elif self.type == "laser":
-            # Add laser effect for the appropriate paddle
-            if collector == "player":
+            # Enhanced laser effect that destroys bricks in its path
+            laser_x = player_paddle.rect.centerx if collector == "player" else ai_paddle.rect.centerx
+            laser_y_start = player_paddle.rect.top if collector == "player" else ai_paddle.rect.bottom
+            laser_color = (50, 150, 255) if collector == "player" else (255, 50, 50)
+            
+            # Add visual laser effect
+            effects.append({
+                "type": "laser", 
+                "x": laser_x, 
+                "y": laser_y_start if collector == "player" else SCREEN_HEIGHT - laser_y_start,
+                "width": 5,
+                "height": SCREEN_HEIGHT if collector == "player" else laser_y_start,
+                "life": 60,
+                "color": laser_color
+            })
+            
+            # Destroy bricks in the laser's path
+            laser_width = 20  # Width of the effective laser beam
+            bricks_destroyed = 0
+            
+            # Check for brick collisions with the laser beam
+            for brick in bricks[:]:
+                # If the laser passes through this brick
+                if abs(brick.rect.centerx - laser_x) < laser_width + brick.rect.width // 2:
+                    # Update brick stats based on collector
+                    if collector == "player":
+                        player_brick_stats[brick.type] = player_brick_stats.get(brick.type, 0) + 1
+                    else:
+                        ai_brick_stats[brick.type] = ai_brick_stats.get(brick.type, 0) + 1
+                    
+                    # Create destruction effect
+                    for _ in range(15):
+                        effects.append({
+                            "type": "particle",
+                            "x": brick.rect.centerx,
+                            "y": brick.rect.centery,
+                            "vx": random.uniform(-4, 4),
+                            "vy": random.uniform(-4, 4),
+                            "life": 40,
+                            "size": random.randint(2, 6),
+                            "color": brick.color
+                        })
+                    
+                    # Remove the brick
+                    bricks.remove(brick)
+                    bricks_destroyed += 1
+            
+            # Show how many bricks were destroyed
+            if bricks_destroyed > 0:
                 effects.append({
-                    "type": "laser", 
-                    "x": player_paddle.rect.centerx, 
-                    "y": player_paddle.rect.top,
-                    "width": 5,
-                    "height": player_paddle.rect.top,
-                    "life": 60,
-                    "color": (50, 150, 255)
+                    "type": "text",
+                    "text": f"{bricks_destroyed} BRICKS DESTROYED!",
+                    "x": GAME_WIDTH // 2,
+                    "y": SCREEN_HEIGHT // 2 + 40,
+                    "life": 120,
+                    "color": notification_color
                 })
-            else:
-                effects.append({
-                    "type": "laser", 
-                    "x": ai_paddle.rect.centerx, 
-                    "y": ai_paddle.rect.bottom,
-                    "width": 5,
-                    "height": SCREEN_HEIGHT - ai_paddle.rect.bottom,
-                    "life": 60,
-                    "color": (255, 50, 50)
-                })
+                
         elif self.type == "slow":
             # Slow down balls temporarily
             for ball in balls:
                 ball.vx *= 0.7
                 ball.vy *= 0.7
-        return extra_player_lives, extra_ai_lives
+                
+        return extra_player_lives, extra_ai_lives, score_bonus
 
 # ---------------------------- HELPER FUNCTIONS ----------------------------
 # Update the create_bricks function for more interesting layouts:
@@ -610,161 +655,8 @@ def show_round_summary(screen, font, large_font):
     
     pygame.time.delay(500)  # Pause at black screen
     
-    # ----------- DRAW SUMMARY SCREEN -----------
-    # Clean black background
-    screen.fill(BLACK, pygame.Rect(0, 0, GAME_WIDTH, SCREEN_HEIGHT))
-    
-    # Draw title
-    title_text = large_font.render(f"ROUND {round_number} SUMMARY", True, WHITE)
-    title_rect = title_text.get_rect(center=(GAME_WIDTH//2, 60))
-    screen.blit(title_text, title_rect)
-    
-    # Draw divider line
-    pygame.draw.line(screen, WHITE, (GAME_WIDTH//2, 120), (GAME_WIDTH//2, 550), 2)
-    
-    # ----------- PLAYER STATS SECTION -----------
-    # Draw player stats header
-    player_header = large_font.render("PLAYER", True, BLUE)
-    player_header_rect = player_header.get_rect(center=(GAME_WIDTH//4, 140))
-    screen.blit(player_header, player_header_rect)
-    
-    # Draw player stats in a more organized way
-    y_offset = 190
-    line_spacing = 30
-    
-    # Brick breakdown
-    screen.blit(font.render("BRICKS BROKEN:", True, WHITE), (50, y_offset))
-    y_offset += line_spacing
-    
-    screen.blit(font.render(f"Type 1 (1pt): {player_brick_stats.get(1, 0)} = {player_brick_stats.get(1, 0) * 1} pts", 
-              True, WHITE), (70, y_offset))
-    y_offset += line_spacing
-    
-    screen.blit(font.render(f"Type 2 (3pts): {player_brick_stats.get(2, 0)} = {player_brick_stats.get(2, 0) * 3} pts", 
-              True, WHITE), (70, y_offset))
-    y_offset += line_spacing
-    
-    screen.blit(font.render(f"Type 3 (5pts): {player_brick_stats.get(3, 0)} = {player_brick_stats.get(3, 0) * 5} pts", 
-              True, WHITE), (70, y_offset))
-    y_offset += line_spacing
-    
-    screen.blit(font.render(f"Boss (10pts): {player_brick_stats.get(4, 0)} = {player_brick_stats.get(4, 0) * 10} pts", 
-              True, WHITE), (70, y_offset))
-    y_offset += line_spacing
-    
-    screen.blit(font.render(f"Moving (3pts): {player_brick_stats.get(5, 0)} = {player_brick_stats.get(5, 0) * 3} pts", 
-              True, WHITE), (70, y_offset))
-    y_offset += line_spacing
-    
-    # Totals
-    pygame.draw.line(screen, WHITE, (50, y_offset), (GAME_WIDTH//2 - 50, y_offset), 1)
-    y_offset += line_spacing
-    
-    screen.blit(font.render(f"BRICK TOTAL: {player_score_from_bricks} pts", True, WHITE), 
-              (70, y_offset))
-    y_offset += line_spacing
-    
-    screen.blit(font.render(f"BALLS LOST: {player_balls_lost} (Penalty: {player_ball_penalty} pts)", 
-              True, WHITE), (70, y_offset))
-    y_offset += line_spacing
-    
-    pygame.draw.line(screen, WHITE, (50, y_offset), (GAME_WIDTH//2 - 50, y_offset), 1)
-    y_offset += line_spacing
-    
-    screen.blit(font.render(f"ROUND SCORE: {player_round_score} pts", True, BLUE), 
-              (70, y_offset))
-    y_offset += line_spacing
-    
-    screen.blit(font.render(f"TOTAL SCORE: {player_total_score} pts", True, BLUE), 
-              (70, y_offset))
-    
-    # ----------- AI STATS SECTION -----------
-    # Mirror layout on right side
-    ai_header = large_font.render("AI", True, RED)
-    ai_header_rect = ai_header.get_rect(center=(GAME_WIDTH*3//4, 140))
-    screen.blit(ai_header, ai_header_rect)
-    
-    y_offset = 190
-    
-    # Brick breakdown
-    screen.blit(font.render("BRICKS BROKEN:", True, WHITE), (GAME_WIDTH//2 + 50, y_offset))
-    y_offset += line_spacing
-    
-    screen.blit(font.render(f"Type 1 (1pt): {ai_brick_stats.get(1, 0)} = {ai_brick_stats.get(1, 0) * 1} pts", 
-              True, WHITE), (GAME_WIDTH//2 + 70, y_offset))
-    y_offset += line_spacing
-    
-    screen.blit(font.render(f"Type 2 (3pts): {ai_brick_stats.get(2, 0)} = {ai_brick_stats.get(2, 0) * 3} pts", 
-              True, WHITE), (GAME_WIDTH//2 + 70, y_offset))
-    y_offset += line_spacing
-    
-    screen.blit(font.render(f"Type 3 (5pts): {ai_brick_stats.get(3, 0)} = {ai_brick_stats.get(3, 0) * 5} pts", 
-              True, WHITE), (GAME_WIDTH//2 + 70, y_offset))
-    y_offset += line_spacing
-    
-    screen.blit(font.render(f"Boss (10pts): {ai_brick_stats.get(4, 0)} = {ai_brick_stats.get(4, 0) * 10} pts", 
-              True, WHITE), (GAME_WIDTH//2 + 70, y_offset))
-    y_offset += line_spacing
-    
-    screen.blit(font.render(f"Moving (3pts): {ai_brick_stats.get(5, 0)} = {ai_brick_stats.get(5, 0) * 3} pts", 
-              True, WHITE), (GAME_WIDTH//2 + 70, y_offset))
-    y_offset += line_spacing
-    
-    # Totals
-    pygame.draw.line(screen, WHITE, (GAME_WIDTH//2 + 50, y_offset), (GAME_WIDTH - 50, y_offset), 1)
-    y_offset += line_spacing
-    
-    screen.blit(font.render(f"BRICK TOTAL: {ai_score_from_bricks} pts", True, WHITE), 
-              (GAME_WIDTH//2 + 70, y_offset))
-    y_offset += line_spacing
-    
-    screen.blit(font.render(f"BALLS LOST: {ai_balls_lost} (Penalty: {ai_ball_penalty} pts)", 
-              True, WHITE), (GAME_WIDTH//2 + 70, y_offset))
-    y_offset += line_spacing
-    
-    pygame.draw.line(screen, WHITE, (GAME_WIDTH//2 + 50, y_offset), (GAME_WIDTH - 50, y_offset), 1)
-    y_offset += line_spacing
-    
-    screen.blit(font.render(f"ROUND SCORE: {ai_round_score} pts", True, RED), 
-              (GAME_WIDTH//2 + 70, y_offset))
-    y_offset += line_spacing
-    
-    screen.blit(font.render(f"TOTAL SCORE: {ai_total_score} pts", True, RED), 
-              (GAME_WIDTH//2 + 70, y_offset))
-    
-    # ----------- WINNER ANNOUNCEMENT -----------
-    winner_y = 580
-    
-    # Draw winner announcement with background
-    if round_winner == "PLAYER":
-        winner_text = large_font.render("PLAYER WINS THIS ROUND!", True, BLUE)
-        bg_color = (0, 0, 100)
-    elif round_winner == "AI":
-        winner_text = large_font.render("AI WINS THIS ROUND!", True, RED)
-        bg_color = (100, 0, 0)
-    else:
-        winner_text = large_font.render("THIS ROUND IS A TIE!", True, WHITE)
-        bg_color = (70, 70, 70)
-    
-    winner_rect = winner_text.get_rect(center=(GAME_WIDTH//2, winner_y))
-    
-    # Draw background box for winner text
-    bg_rect = winner_rect.inflate(40, 20)
-    pygame.draw.rect(screen, bg_color, bg_rect)
-    pygame.draw.rect(screen, winner_color, bg_rect, 3)
-    
-    # Draw winner text
-    screen.blit(winner_text, winner_rect)
-    
-    # ----------- CONTINUE PROMPT -----------
-    continue_text = font.render("Press SPACE to continue to next round", True, WHITE)
-    continue_rect = continue_text.get_rect(center=(GAME_WIDTH//2, winner_y + 60))
-    
-    # Blinking effect
-    if (pygame.time.get_ticks() // 500) % 2 == 0:  # Blink every half second
-        screen.blit(continue_text, continue_rect)
-    
-    pygame.display.flip()
+    # The detailed summary screen will now be drawn continuously in the main game loop
+    # while showing_round_summary is True
 
 # Add this function to draw the power-up legend:
 
@@ -786,7 +678,7 @@ def draw_powerup_legend(screen, font, start_y=400):
         {"name": "Speed", "desc": "Increases ball speed", "color": (255, 255, 0)},
         {"name": "Size", "desc": "Increases paddle size", "color": (0, 255, 0)},
         {"name": "Multi", "desc": "Adds an extra ball", "color": (255, 0, 255)},
-        {"name": "Life", "desc": "Extra life", "color": (255, 128, 0)},
+        {"name": "Score", "desc": "Adds score bonus", "color": (255, 128, 0)},
         {"name": "Laser", "desc": "Shoots a laser beam", "color": (50, 150, 255)},
         {"name": "Slow", "desc": "Slows down balls", "color": (0, 200, 200)}
     ]
@@ -867,6 +759,189 @@ def main():
             current_time = pygame.time.get_ticks()
             keys = pygame.key.get_pressed()
             
+            # Redraw the round summary screen on each frame
+            # First clear the screen
+            screen.fill(BLACK, pygame.Rect(0, 0, GAME_WIDTH, SCREEN_HEIGHT))
+            
+            # Re-render the summary content
+            # Draw title
+            title_text = large_font.render(f"ROUND {round_number} SUMMARY", True, WHITE)
+            title_rect = title_text.get_rect(center=(GAME_WIDTH//2, 60))
+            screen.blit(title_text, title_rect)
+            
+            # Draw divider line
+            pygame.draw.line(screen, WHITE, (GAME_WIDTH//2, 120), (GAME_WIDTH//2, 550), 2)
+            
+            # ----------- PLAYER STATS SECTION -----------
+            # Draw player stats header
+            player_header = large_font.render("PLAYER", True, BLUE)
+            player_header_rect = player_header.get_rect(center=(GAME_WIDTH//4, 140))
+            screen.blit(player_header, player_header_rect)
+            
+            # Calculate player score for display
+            player_score_from_bricks = (player_brick_stats.get(1, 0) * 1 + 
+                                     player_brick_stats.get(2, 0) * 3 + 
+                                     player_brick_stats.get(3, 0) * 5 +
+                                     player_brick_stats.get(4, 0) * 10 +
+                                     player_brick_stats.get(5, 0) * 3)
+            
+            player_ball_penalty = min(15, sum(max(0, 6-i) for i in range(1, player_balls_lost+1)))
+            
+            # Draw player stats in a more organized way
+            y_offset = 190
+            line_spacing = 30
+            
+            # Brick breakdown
+            screen.blit(font.render("BRICKS BROKEN:", True, WHITE), (50, y_offset))
+            y_offset += line_spacing
+            
+            screen.blit(font.render(f"Type 1 (1pt): {player_brick_stats.get(1, 0)} = {player_brick_stats.get(1, 0) * 1} pts", 
+                      True, WHITE), (70, y_offset))
+            y_offset += line_spacing
+            
+            screen.blit(font.render(f"Type 2 (3pts): {player_brick_stats.get(2, 0)} = {player_brick_stats.get(2, 0) * 3} pts", 
+                      True, WHITE), (70, y_offset))
+            y_offset += line_spacing
+            
+            screen.blit(font.render(f"Type 3 (5pts): {player_brick_stats.get(3, 0)} = {player_brick_stats.get(3, 0) * 5} pts", 
+                      True, WHITE), (70, y_offset))
+            y_offset += line_spacing
+            
+            screen.blit(font.render(f"Boss (10pts): {player_brick_stats.get(4, 0)} = {player_brick_stats.get(4, 0) * 10} pts", 
+                      True, WHITE), (70, y_offset))
+            y_offset += line_spacing
+            
+            screen.blit(font.render(f"Moving (3pts): {player_brick_stats.get(5, 0)} = {player_brick_stats.get(5, 0) * 3} pts", 
+                      True, WHITE), (70, y_offset))
+            y_offset += line_spacing
+            
+            # Totals
+            pygame.draw.line(screen, WHITE, (50, y_offset), (GAME_WIDTH//2 - 50, y_offset), 1)
+            y_offset += line_spacing
+            
+            screen.blit(font.render(f"BRICK TOTAL: {player_score_from_bricks} pts", True, WHITE), 
+                      (70, y_offset))
+            y_offset += line_spacing
+            
+            screen.blit(font.render(f"BALLS LOST: {player_balls_lost} (Penalty: {player_ball_penalty} pts)", 
+                      True, WHITE), (70, y_offset))
+            y_offset += line_spacing
+            
+            pygame.draw.line(screen, WHITE, (50, y_offset), (GAME_WIDTH//2 - 50, y_offset), 1)
+            y_offset += line_spacing
+            
+            screen.blit(font.render(f"ROUND SCORE: {player_round_score} pts", True, BLUE), 
+                      (70, y_offset))
+            y_offset += line_spacing
+            
+            screen.blit(font.render(f"TOTAL SCORE: {player_total_score} pts", True, BLUE), 
+                      (70, y_offset))
+            
+            # ----------- AI STATS SECTION -----------
+            # Mirror layout on right side
+            ai_header = large_font.render("AI", True, RED)
+            ai_header_rect = ai_header.get_rect(center=(GAME_WIDTH*3//4, 140))
+            screen.blit(ai_header, ai_header_rect)
+            
+            # Calculate AI score for display
+            ai_score_from_bricks = (ai_brick_stats.get(1, 0) * 1 + 
+                                  ai_brick_stats.get(2, 0) * 3 + 
+                                  ai_brick_stats.get(3, 0) * 5 +
+                                  ai_brick_stats.get(4, 0) * 10 +
+                                  ai_brick_stats.get(5, 0) * 3)
+            
+            ai_ball_penalty = min(15, sum(max(0, 6-i) for i in range(1, ai_balls_lost+1)))
+            
+            y_offset = 190
+            
+            # Brick breakdown
+            screen.blit(font.render("BRICKS BROKEN:", True, WHITE), (GAME_WIDTH//2 + 50, y_offset))
+            y_offset += line_spacing
+            
+            screen.blit(font.render(f"Type 1 (1pt): {ai_brick_stats.get(1, 0)} = {ai_brick_stats.get(1, 0) * 1} pts", 
+                      True, WHITE), (GAME_WIDTH//2 + 70, y_offset))
+            y_offset += line_spacing
+            
+            screen.blit(font.render(f"Type 2 (3pts): {ai_brick_stats.get(2, 0)} = {ai_brick_stats.get(2, 0) * 3} pts", 
+                      True, WHITE), (GAME_WIDTH//2 + 70, y_offset))
+            y_offset += line_spacing
+            
+            screen.blit(font.render(f"Type 3 (5pts): {ai_brick_stats.get(3, 0)} = {ai_brick_stats.get(3, 0) * 5} pts", 
+                      True, WHITE), (GAME_WIDTH//2 + 70, y_offset))
+            y_offset += line_spacing
+            
+            screen.blit(font.render(f"Boss (10pts): {ai_brick_stats.get(4, 0)} = {ai_brick_stats.get(4, 0) * 10} pts", 
+                      True, WHITE), (GAME_WIDTH//2 + 70, y_offset))
+            y_offset += line_spacing
+            
+            screen.blit(font.render(f"Moving (3pts): {ai_brick_stats.get(5, 0)} = {ai_brick_stats.get(5, 0) * 3} pts", 
+                      True, WHITE), (GAME_WIDTH//2 + 70, y_offset))
+            y_offset += line_spacing
+            
+            # Totals
+            pygame.draw.line(screen, WHITE, (GAME_WIDTH//2 + 50, y_offset), (GAME_WIDTH - 50, y_offset), 1)
+            y_offset += line_spacing
+            
+            screen.blit(font.render(f"BRICK TOTAL: {ai_score_from_bricks} pts", True, WHITE), 
+                      (GAME_WIDTH//2 + 70, y_offset))
+            y_offset += line_spacing
+            
+            screen.blit(font.render(f"BALLS LOST: {ai_balls_lost} (Penalty: {ai_ball_penalty} pts)", 
+                      True, WHITE), (GAME_WIDTH//2 + 70, y_offset))
+            y_offset += line_spacing
+            
+            pygame.draw.line(screen, WHITE, (GAME_WIDTH//2 + 50, y_offset), (GAME_WIDTH - 50, y_offset), 1)
+            y_offset += line_spacing
+            
+            screen.blit(font.render(f"ROUND SCORE: {ai_round_score} pts", True, RED), 
+                      (GAME_WIDTH//2 + 70, y_offset))
+            y_offset += line_spacing
+            
+            screen.blit(font.render(f"TOTAL SCORE: {ai_total_score} pts", True, RED), 
+                      (GAME_WIDTH//2 + 70, y_offset))
+            
+            # ----------- WINNER ANNOUNCEMENT -----------
+            winner_y = 580
+            
+            # Draw winner announcement with background
+            if round_winner == "PLAYER":
+                winner_text = large_font.render("PLAYER WINS THIS ROUND!", True, BLUE)
+                bg_color = (0, 0, 100)
+                winner_color = BLUE
+            elif round_winner == "AI":
+                winner_text = large_font.render("AI WINS THIS ROUND!", True, RED)
+                bg_color = (100, 0, 0)
+                winner_color = RED
+            else:
+                winner_text = large_font.render("THIS ROUND IS A TIE!", True, WHITE)
+                bg_color = (70, 70, 70)
+                winner_color = WHITE
+            
+            winner_rect = winner_text.get_rect(center=(GAME_WIDTH//2, winner_y))
+            
+            # Draw background box for winner text
+            bg_rect = winner_rect.inflate(40, 20)
+            pygame.draw.rect(screen, bg_color, bg_rect)
+            pygame.draw.rect(screen, winner_color, bg_rect, 3)
+            
+            # Draw winner text
+            screen.blit(winner_text, winner_rect)
+            
+            # ----------- CONTINUE PROMPT -----------
+            continue_text = font.render("Press SPACE to continue to next round", True, WHITE)
+            continue_rect = continue_text.get_rect(center=(GAME_WIDTH//2, winner_y + 60))
+            
+            # Blinking effect
+            if (pygame.time.get_ticks() // 500) % 2 == 0:  # Blink every half second
+                screen.blit(continue_text, continue_rect)
+            
+            # Draw the side panel as well
+            draw_side_panel(screen, font, metrics)
+            
+            # Update display
+            pygame.display.flip()
+            
+            # Check for continue condition after drawing
             if keys[pygame.K_SPACE] or (current_time - round_summary_start_time > 15000):  # 15 seconds timeout
                 showing_round_summary = False
                 round_number += 1
@@ -878,16 +953,61 @@ def main():
             continue
 
         if game_state != "playing":
+            # Clear the screen first
+            screen.fill(BLACK, pygame.Rect(0, 0, GAME_WIDTH, SCREEN_HEIGHT))
+            
+            # Draw the game background to give context
+            for y in range(0, SCREEN_HEIGHT, 4):
+                color_value = 20 + (y / SCREEN_HEIGHT * 30)
+                pygame.draw.rect(screen, (0, 0, color_value), pygame.Rect(0, y, GAME_WIDTH, 4))
+            
             # Draw pause/game over screen
             if game_state == "paused":
+                # Semi-transparent overlay
+                overlay = pygame.Surface((GAME_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+                overlay.fill((0, 0, 0, 128))
+                screen.blit(overlay, (0, 0))
+                
+                # Pause text with background
                 pause_text = large_font.render("PAUSED", True, WHITE)
-                screen.blit(pause_text, (GAME_WIDTH//2 - pause_text.get_width()//2, SCREEN_HEIGHT//2))
+                text_rect = pause_text.get_rect(center=(GAME_WIDTH//2, SCREEN_HEIGHT//2))
+                bg_rect = text_rect.inflate(40, 20)
+                pygame.draw.rect(screen, (50, 50, 50), bg_rect)
+                pygame.draw.rect(screen, WHITE, bg_rect, 3)
+                screen.blit(pause_text, text_rect)
+                
+                # Add instruction
+                instruction = font.render("Press P to continue", True, WHITE)
+                inst_rect = instruction.get_rect(center=(GAME_WIDTH//2, SCREEN_HEIGHT//2 + 60))
+                screen.blit(instruction, inst_rect)
+            
             elif game_state == "game_over":
+                # Semi-transparent overlay
+                overlay = pygame.Surface((GAME_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+                overlay.fill((0, 0, 0, 180))
+                screen.blit(overlay, (0, 0))
+                
                 result = "YOU WIN!" if ai_lives <= 0 else "GAME OVER"
-                game_over_text = large_font.render(result, True, WHITE)
+                result_color = BLUE if ai_lives <= 0 else RED
+                
+                game_over_text = large_font.render(result, True, result_color)
+                text_rect = game_over_text.get_rect(center=(GAME_WIDTH//2, SCREEN_HEIGHT//2 - 50))
+                bg_rect = text_rect.inflate(40, 20)
+                pygame.draw.rect(screen, (50, 50, 50), bg_rect)
+                pygame.draw.rect(screen, result_color, bg_rect, 3)
+                screen.blit(game_over_text, text_rect)
+                
+                # Show final scores
+                final_score_text = font.render(f"Final Score - Player: {player_total_score}  AI: {ai_total_score}", True, WHITE)
+                score_rect = final_score_text.get_rect(center=(GAME_WIDTH//2, SCREEN_HEIGHT//2 + 20))
+                screen.blit(final_score_text, score_rect)
+                
                 restart_text = font.render("Press R to restart", True, WHITE)
-                screen.blit(game_over_text, (GAME_WIDTH//2 - game_over_text.get_width()//2, SCREEN_HEIGHT//2 - 50))
-                screen.blit(restart_text, (GAME_WIDTH//2 - restart_text.get_width()//2, SCREEN_HEIGHT//2 + 20))
+                restart_rect = restart_text.get_rect(center=(GAME_WIDTH//2, SCREEN_HEIGHT//2 + 60))
+                screen.blit(restart_text, restart_rect)
+            
+            # Always draw the side panel for additional info
+            draw_side_panel(screen, font, metrics)
             
             pygame.display.flip()
             continue
@@ -1028,8 +1148,9 @@ def main():
             
             # Check if power-up is collected by player
             if power_up.rect.colliderect(player_paddle.rect) and power_up.direction == "down":
-                player_bonus, _ = power_up.apply(player_paddle, ai_paddle, balls, "player")
+                player_bonus, _, score_bonus = power_up.apply(player_paddle, ai_paddle, balls, "player")
                 player_lives += player_bonus
+                player_total_score += score_bonus  # Add score bonus to player total
                 power_ups.remove(power_up)
                 if powerup_sound:
                     powerup_sound.play()
@@ -1037,8 +1158,9 @@ def main():
                 
             # Check if power-up is collected by AI
             if power_up.rect.colliderect(ai_paddle.rect) and power_up.direction == "up":
-                _, ai_bonus = power_up.apply(player_paddle, ai_paddle, balls, "ai")
+                _, ai_bonus, score_bonus = power_up.apply(player_paddle, ai_paddle, balls, "ai")
                 ai_lives += ai_bonus
+                ai_total_score += score_bonus  # Add score bonus to AI total
                 power_ups.remove(power_up)
                 if powerup_sound:
                     powerup_sound.play()
@@ -1264,9 +1386,6 @@ def main():
 
         # Draw side panel with metrics
         draw_side_panel(screen, font, metrics)
-
-        # Draw power-up legend
-        draw_powerup_legend(screen, font)
 
         pygame.display.flip()
 
