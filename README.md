@@ -1,4 +1,4 @@
-# 🧱 Brick Versus - Enhanced Edition
+# 🧱 Brick Pong - Enhanced Edition
 
 A dynamic two-player brick breaking game where you compete against an AI opponent to destroy bricks and score points. Both players have paddles and must prevent balls from going past them while trying to break as many bricks as possible.
 
