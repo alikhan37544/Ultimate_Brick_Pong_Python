@@ -26,22 +26,24 @@ class BrickPongEnv(gym.Env):
     def __init__(self, max_balls=6, rl_mode=True):
         super().__init__()
         self.max_balls = max_balls
+        self.max_powerups = 3
+        self.max_bricks = 20  # Pad to 20 bricks for obs
         self.rl_mode = rl_mode
 
-        # Action space: 0 = stay, 1 = left, 2 = right
-        self.action_space = gym.spaces.Discrete(3)
+        # Observation: 
+        # [player_x, ai_x, player_left, player_right, ai_left, ai_right]
+        # For each ball: x, y, vx, vy, dist_to_paddle, dist_to_nearest_brick (6×6=36)
+        # Closest ball dx, dy
+        # Balls left, bricks left
+        # For each brick: x, y, type (20×3=60)
+        # For each powerup: x, y, type (3×3=9)
+        obs_len = 6 + self.max_balls*6 + 2 + 2 + self.max_bricks*3 + self.max_powerups*3
 
-        # Observation: player_x, ai_x, for each ball: x, y, vx, vy (pad to max_balls)
-        max_powerups = 3
-        low = np.array(
-            [0, 0] + [0, 0, -20, -20] * max_balls + [0, 0, -1] * max_powerups,
-            dtype=np.float32
-        )
-        high = np.array(
-            [GAME_WIDTH, GAME_WIDTH] + [GAME_WIDTH, SCREEN_HEIGHT, 20, 20] * max_balls + [GAME_WIDTH, SCREEN_HEIGHT, 5] * max_powerups,
-            dtype=np.float32
-        )
+        low = np.full(obs_len, -1000, dtype=np.float32)
+        high = np.full(obs_len, 2000, dtype=np.float32)
         self.observation_space = gym.spaces.Box(low, high, dtype=np.float32)
+
+        self.action_space = gym.spaces.Discrete(3)
 
         pygame.init()
         if self.rl_mode:
@@ -79,40 +81,35 @@ class BrickPongEnv(gym.Env):
         return obs, info
 
     def step(self, action):
-        # --- Apply agent action ---
-        prev_x = self.player_paddle.rect.centerx  # Track previous position
+        prev_x = self.player_paddle.rect.centerx
+
+        # Move paddle
         if action == 1:
             self.player_paddle.move(-PADDLE_SPEED)
         elif action == 2:
             self.player_paddle.move(PADDLE_SPEED)
 
-        # --- AI action (heuristic) ---
         self.ai_paddle.update(self.balls)
 
-        reward = 0
-        player_bricks_before = getattr(self, "player_bricks_broken", 0)
-        ai_bricks_before = getattr(self, "ai_bricks_broken", 0)
-        player_bricks_now = player_bricks_before
-        ai_bricks_now = ai_bricks_before
+        reward = 0.0
 
-        # --- Penalize hugging the wall ---
+        # Penalize hugging the wall
         if self.player_paddle.rect.left <= 0 or self.player_paddle.rect.right >= GAME_WIDTH:
-            reward -= 1  # Penalize wall hugging
+            reward -= 0.01
 
-        # --- Penalize not moving ---
+        # Encourage movement
         if not hasattr(self, "no_move_steps"):
             self.no_move_steps = 0
-        if self.player_paddle.rect.centerx == prev_x:
-            self.no_move_steps += 1
-            if self.no_move_steps > 10:
-                reward -= 0.5  # Penalize for not moving for several steps
-        else:
+        if self.player_paddle.rect.centerx != prev_x:
+            reward += 0.01
             self.no_move_steps = 0
+        else:
+            self.no_move_steps += 1
+            if self.no_move_steps >= 10:
+                reward -= 0.05  # Penalize standing still
 
-        # --- Reward for being in the "saving line" of any ball ---
-        for ball in self.balls:
-            if abs(self.player_paddle.rect.centerx - ball.rect.centerx) < self.player_paddle.rect.width // 2:
-                reward += 0.2  # Small reward for being in line with a ball
+        # Track bricks broken this step
+        bricks_broken_this_step = 0
 
         for ball in self.balls[:]:
             ball.update()
@@ -120,7 +117,7 @@ class BrickPongEnv(gym.Env):
             if ball.rect.bottom >= SCREEN_HEIGHT:
                 self.player_balls_lost += 1
                 self.balls.remove(ball)
-                reward -= 10
+                reward -= 10.0
                 continue
 
             # Ball lost (top)
@@ -136,7 +133,7 @@ class BrickPongEnv(gym.Env):
                 ball.vx = 5 * offset * 1.5
                 ball.rect.bottom = self.player_paddle.rect.top
                 ball.last_hit_by = "player"
-                reward += 2  # Sizeable reward for saving the ball
+                reward += 0.1
 
             # Paddle collision (AI)
             if ball.rect.colliderect(self.ai_paddle.rect) and ball.vy < 0:
@@ -152,43 +149,87 @@ class BrickPongEnv(gym.Env):
                     if brick.hit():
                         self.bricks.remove(brick)
                         if ball.last_hit_by == "player":
-                            reward += 5
-                            player_bricks_now += 1
-                        elif ball.last_hit_by == "ai":
-                            reward -= 2
-                            ai_bricks_now += 1
+                            reward += 1.0
+                            bricks_broken_this_step += 1
                     ball.vy = -ball.vy
                     break
 
-        # Track bricks broken
-        self.player_bricks_broken = player_bricks_now
-        self.ai_bricks_broken = ai_bricks_now
-
-        # Compare bricks broken
-        if player_bricks_now > ai_bricks_now:
-            reward += 20
-        elif player_bricks_now < ai_bricks_now:
-            reward -= 5
+        # Bonus for breaking multiple bricks in one step
+        if bricks_broken_this_step > 1:
+            reward += 0.5 * (bricks_broken_this_step - 1)
 
         terminated = len(self.balls) == 0 or len(self.bricks) == 0 or self.player_balls_lost >= 5 or getattr(self, "done", False)
         truncated = False
-        info = {"winner": "agent" if len(self.bricks) == 0 else "env"}
+        info = {
+            "winner": "agent" if len(self.bricks) == 0 else "env",
+            "balls_left": len(self.balls),
+            "bricks_left": len(self.bricks),
+            "player_balls_lost": self.player_balls_lost,
+        }
         return self._get_obs(), reward, terminated, truncated, info
 
     def _get_obs(self):
-        # Observation: player_x, ai_x, for each ball: x, y, vx, vy (pad to max_balls)
-        obs = [self.player_paddle.rect.centerx, self.ai_paddle.rect.centerx]
+        obs = []
+        # Paddle positions and edges
+        obs.extend([
+            self.player_paddle.rect.centerx,
+            self.ai_paddle.rect.centerx,
+            self.player_paddle.rect.left,
+            self.player_paddle.rect.right,
+            self.ai_paddle.rect.left,
+            self.ai_paddle.rect.right,
+        ])
+        # Balls
         for i in range(self.max_balls):
             if i < len(self.balls):
                 b = self.balls[i]
-                obs.extend([b.rect.centerx, b.rect.centery, b.vx, b.vy])
+                # Distance to player paddle center
+                dist_to_paddle = np.linalg.norm([
+                    b.rect.centerx - self.player_paddle.rect.centerx,
+                    b.rect.centery - self.player_paddle.rect.centery
+                ])
+                # Distance to nearest brick
+                if self.bricks:
+                    dists = [np.linalg.norm([
+                        b.rect.centerx - brick.rect.centerx,
+                        b.rect.centery - brick.rect.centery
+                    ]) for brick in self.bricks]
+                    dist_to_brick = min(dists)
+                else:
+                    dist_to_brick = 0
+                obs.extend([
+                    b.rect.centerx, b.rect.centery, b.vx, b.vy,
+                    dist_to_paddle, dist_to_brick
+                ])
             else:
-                obs.extend([0, 0, 0, 0])
-        # Add power-ups: x, y, type (as int), pad to max_powerups
-        max_powerups = 3
+                obs.extend([0, 0, 0, 0, 0, 0])
+        # Closest ball dx/dy
+        closest_ball_dx = 0
+        closest_ball_dy = 0
+        min_dist = float("inf")
+        for b in self.balls:
+            dx = b.rect.centerx - self.player_paddle.rect.centerx
+            dy = b.rect.centery - self.player_paddle.rect.centery
+            dist = abs(dx) + abs(dy)
+            if dist < min_dist:
+                min_dist = dist
+                closest_ball_dx = dx
+                closest_ball_dy = dy
+        obs.extend([closest_ball_dx, closest_ball_dy])
+        # Balls left, bricks left
+        obs.append(len(self.balls))
+        obs.append(len(self.bricks))
+        # Bricks info (pad to max_bricks)
+        for i in range(self.max_bricks):
+            if i < len(self.bricks):
+                brick = self.bricks[i]
+                obs.extend([brick.rect.centerx, brick.rect.centery, getattr(brick, "type", -1)])
+            else:
+                obs.extend([0, 0, -1])
+        # Powerups info (already padded in original)
         powerup_type_map = {"speed": 0, "size": 1, "multi": 2, "score": 3, "laser": 4, "slow": 5}
         powerups = getattr(self, "power_ups", [])
-        for i in range(max_powerups):
+        for i in range(self.max_powerups):
             if i < len(powerups):
                 pu = powerups[i]
                 obs.extend([pu.rect.centerx, pu.rect.centery, powerup_type_map.get(pu.type, -1)])

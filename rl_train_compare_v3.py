@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 import time
 import multiprocessing
+import random
 
 from stable_baselines3 import DQN, PPO, A2C, DDPG
 from sb3_contrib import QRDQN
@@ -54,7 +55,7 @@ def record_video(algo_name, model, env, video_length=VIDEO_LENGTH):
             obs = venv.reset()
     venv.close()
 
-def train_batch(algo_name, algo_class, batch_id, return_dict):
+def train_batch(algo_name, algo_class, batch_id, return_dict, progress_queue, vis_queue):
     env = Monitor(BrickPongEnv(rl_mode=True))
     model = algo_class("MlpPolicy", env, verbose=0)
     rewards = []
@@ -68,22 +69,62 @@ def train_batch(algo_name, algo_class, batch_id, return_dict):
             done = terminated or truncated
             total_reward += reward
         rewards.append(total_reward)
-    avg_reward = np.mean(rewards)
+        # Every 1000th episode, save model and notify for visualization
+        if (i + 1) % 1000 == 0:
+            model_path = f"{MODEL_DIR}/{algo_name}_batch{batch_id}_ep{i+1}_model"
+            model.save(model_path)
+            vis_queue.put((batch_id, i + 1, model_path))
+        # Progress reporting
+        if (i + 1) % 1000 == 0:
+            progress_queue.put(1000)
+    # Final model for batch
     model_path = f"{MODEL_DIR}/{algo_name}_batch{batch_id}_model"
     model.save(model_path)
+    avg_reward = np.mean(rewards)
     return_dict[batch_id] = (avg_reward, model_path)
+    # Report any remaining progress
+    progress_queue.put((500 % 1000) or 500)
     env.close()
 
 if __name__ == "__main__":
     manager = multiprocessing.Manager()
     return_dict = manager.dict()
-    algo_name = "DQN"  # Or any from your algorithms
+    progress_queue = manager.Queue()
+    vis_queue = manager.Queue()
+    algo_name = "DQN"
     algo_class = algorithms[algo_name]
     jobs = []
+    N_CPUS = multiprocessing.cpu_count()
+    total_episodes = N_CPUS * 500
     for batch_id in range(N_CPUS):
-        p = multiprocessing.Process(target=train_batch, args=(algo_name, algo_class, batch_id, return_dict))
+        p = multiprocessing.Process(target=train_batch, args=(algo_name, algo_class, batch_id, return_dict, progress_queue, vis_queue))
         p.start()
         jobs.append(p)
+
+    # Progress bar for batches (updates every 1000 episodes)
+    with tqdm(total=total_episodes, desc="Parallel Batch Training") as pbar:
+        finished = 0
+        while finished < total_episodes:
+            # Check for progress
+            while not progress_queue.empty():
+                update = progress_queue.get()
+                pbar.update(update)
+                finished += update
+            # Check for visualization requests
+            while not vis_queue.empty():
+                batch_id, ep_num, model_path = vis_queue.get()
+                print(f"\n[Visualizing] Batch {batch_id}, Episode {ep_num}")
+                env = Monitor(BrickPongEnv(rl_mode=False))
+                model = algo_class.load(model_path, env=env)
+                obs, _ = env.reset()
+                done = False
+                while not done:
+                    action, _ = model.predict(obs, deterministic=True)
+                    obs, reward, terminated, truncated, info = env.step(action)
+                    done = terminated or truncated
+                    env.render()
+                env.close()
+            time.sleep(0.1)  # Prevent busy waiting
     for p in jobs:
         p.join()
 
@@ -92,7 +133,22 @@ if __name__ == "__main__":
     best_model_path = best_batch[1][1]
     print(f"Best model: {best_model_path} with avg reward {best_batch[1][0]}")
 
-    # Visualize and continue training with best model
+    # Visualize a random batch model
+    random_batch_id = random.choice(list(return_dict.keys()))
+    random_model_path = return_dict[random_batch_id][1]
+    print(f"Visualizing random batch: {random_batch_id} ({random_model_path})")
+    env = Monitor(BrickPongEnv(rl_mode=False))
+    model = algo_class.load(random_model_path, env=env)
+    obs, _ = env.reset()
+    done = False
+    while not done:
+        action, _ = model.predict(obs, deterministic=True)
+        obs, reward, terminated, truncated, info = env.step(action)
+        done = terminated or truncated
+        env.render()
+    env.close()
+
+    # Continue with best model as before...
     env = Monitor(BrickPongEnv(rl_mode=False))
     model = algo_class.load(best_model_path, env=env)
     for i in tqdm(range(500, NUM_TRAIN_STEPS), desc="Visual Training"):
