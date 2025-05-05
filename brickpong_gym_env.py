@@ -95,30 +95,38 @@ class BrickPongEnv(gym.Env):
                 self.player_balls_lost += 1
                 self.balls.remove(ball)
                 reward -= 10  # Strong penalty for losing a ball
+                continue  # Skip further checks for this ball
+
             # Ball lost (top)
             elif ball.rect.top <= 0:
                 self.ai_balls_lost += 1
                 self.balls.remove(ball)
-            # Paddle collision
+                continue
+
+            # Paddle collision (player)
             if ball.rect.colliderect(self.player_paddle.rect) and ball.vy > 0:
                 ball.vy = -abs(ball.vy)
                 offset = (ball.rect.centerx - self.player_paddle.rect.centerx) / (self.player_paddle.rect.width / 2)
                 ball.vx = 5 * offset * 1.5
                 ball.rect.bottom = self.player_paddle.rect.top
                 ball.last_hit_by = "player"
+                reward += 0.5  # Small reward for saving the ball
+
+            # Paddle collision (AI)
             if ball.rect.colliderect(self.ai_paddle.rect) and ball.vy < 0:
                 ball.vy = abs(ball.vy)
                 offset = (ball.rect.centerx - self.ai_paddle.rect.centerx) / (self.ai_paddle.rect.width / 2)
                 ball.vx = 5 * offset * 1.5
                 ball.rect.top = self.ai_paddle.rect.bottom
                 ball.last_hit_by = "ai"
+
             # Brick collision
             for brick in self.bricks[:]:
                 if ball.rect.colliderect(brick.rect):
                     if brick.hit():
                         self.bricks.remove(brick)
                         if ball.last_hit_by == "player":
-                            reward += 1
+                            reward += 5  # Big reward for breaking a brick
                     ball.vy = -ball.vy
                     break
 
