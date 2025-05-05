@@ -32,8 +32,15 @@ class BrickPongEnv(gym.Env):
         self.action_space = gym.spaces.Discrete(3)
 
         # Observation: player_x, ai_x, for each ball: x, y, vx, vy (pad to max_balls)
-        low = np.array([0, 0] + [0, 0, -20, -20] * max_balls, dtype=np.float32)
-        high = np.array([GAME_WIDTH, GAME_WIDTH] + [GAME_WIDTH, SCREEN_HEIGHT, 20, 20] * max_balls, dtype=np.float32)
+        max_powerups = 3
+        low = np.array(
+            [0, 0] + [0, 0, -20, -20] * max_balls + [0, 0, -1] * max_powerups,
+            dtype=np.float32
+        )
+        high = np.array(
+            [GAME_WIDTH, GAME_WIDTH] + [GAME_WIDTH, SCREEN_HEIGHT, 20, 20] * max_balls + [GAME_WIDTH, SCREEN_HEIGHT, 5] * max_powerups,
+            dtype=np.float32
+        )
         self.observation_space = gym.spaces.Box(low, high, dtype=np.float32)
 
         pygame.init()
@@ -130,6 +137,16 @@ class BrickPongEnv(gym.Env):
                 obs.extend([b.rect.centerx, b.rect.centery, b.vx, b.vy])
             else:
                 obs.extend([0, 0, 0, 0])
+        # Add power-ups: x, y, type (as int), pad to max_powerups
+        max_powerups = 3
+        powerup_type_map = {"speed": 0, "size": 1, "multi": 2, "score": 3, "laser": 4, "slow": 5}
+        powerups = getattr(self, "power_ups", [])
+        for i in range(max_powerups):
+            if i < len(powerups):
+                pu = powerups[i]
+                obs.extend([pu.rect.centerx, pu.rect.centery, powerup_type_map.get(pu.type, -1)])
+            else:
+                obs.extend([0, 0, -1])
         return np.array(obs, dtype=np.float32)
 
     def render(self, mode="human"):
