@@ -94,7 +94,7 @@ class BrickPongEnv(gym.Env):
             if ball.rect.bottom >= SCREEN_HEIGHT:
                 self.player_balls_lost += 1
                 self.balls.remove(ball)
-                reward -= 1
+                reward -= 10  # Strong penalty for losing a ball
             # Ball lost (top)
             elif ball.rect.top <= 0:
                 self.ai_balls_lost += 1
@@ -123,7 +123,7 @@ class BrickPongEnv(gym.Env):
                     break
 
         # --- Done? ---
-        terminated = len(self.balls) == 0 or len(self.bricks) == 0 or self.player_balls_lost >= 5
+        terminated = len(self.balls) == 0 or len(self.bricks) == 0 or self.player_balls_lost >= 5 or getattr(self, "done", False)
         truncated = False  # You can add a max steps limit if you want
         info = {"winner": "agent" if len(self.bricks) == 0 else "env"}
         return self._get_obs(), reward, terminated, truncated, info
@@ -151,6 +151,11 @@ class BrickPongEnv(gym.Env):
 
     def render(self, mode="human"):
         if not self.rl_mode:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    self.done = True
+                    pygame.quit()
+                    return
             # --- Full rendering for demo/video ---
             self.screen.fill((30, 30, 40))
 
