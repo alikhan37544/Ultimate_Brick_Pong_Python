@@ -71,6 +71,8 @@ class BrickPongEnv(gym.Env):
         self.bricks = bricks
         self.player_balls_lost = player_balls_lost
         self.ai_balls_lost = ai_balls_lost
+        self.player_bricks_broken = 0
+        self.ai_bricks_broken = 0
         self.done = False
         obs = self._get_obs()
         info = {}  # Optionally add info
@@ -78,6 +80,7 @@ class BrickPongEnv(gym.Env):
 
     def step(self, action):
         # --- Apply agent action ---
+        prev_x = self.player_paddle.rect.centerx  # Track previous position
         if action == 1:
             self.player_paddle.move(-PADDLE_SPEED)
         elif action == 2:
@@ -86,16 +89,39 @@ class BrickPongEnv(gym.Env):
         # --- AI action (heuristic) ---
         self.ai_paddle.update(self.balls)
 
-        # --- Ball update and collision ---
         reward = 0
+        player_bricks_before = getattr(self, "player_bricks_broken", 0)
+        ai_bricks_before = getattr(self, "ai_bricks_broken", 0)
+        player_bricks_now = player_bricks_before
+        ai_bricks_now = ai_bricks_before
+
+        # --- Penalize hugging the wall ---
+        if self.player_paddle.rect.left <= 0 or self.player_paddle.rect.right >= GAME_WIDTH:
+            reward -= 1  # Penalize wall hugging
+
+        # --- Penalize not moving ---
+        if not hasattr(self, "no_move_steps"):
+            self.no_move_steps = 0
+        if self.player_paddle.rect.centerx == prev_x:
+            self.no_move_steps += 1
+            if self.no_move_steps > 10:
+                reward -= 0.5  # Penalize for not moving for several steps
+        else:
+            self.no_move_steps = 0
+
+        # --- Reward for being in the "saving line" of any ball ---
+        for ball in self.balls:
+            if abs(self.player_paddle.rect.centerx - ball.rect.centerx) < self.player_paddle.rect.width // 2:
+                reward += 0.2  # Small reward for being in line with a ball
+
         for ball in self.balls[:]:
             ball.update()
             # Ball lost (bottom)
             if ball.rect.bottom >= SCREEN_HEIGHT:
                 self.player_balls_lost += 1
                 self.balls.remove(ball)
-                reward -= 10  # Strong penalty for losing a ball
-                continue  # Skip further checks for this ball
+                reward -= 10
+                continue
 
             # Ball lost (top)
             elif ball.rect.top <= 0:
@@ -110,7 +136,7 @@ class BrickPongEnv(gym.Env):
                 ball.vx = 5 * offset * 1.5
                 ball.rect.bottom = self.player_paddle.rect.top
                 ball.last_hit_by = "player"
-                reward += 0.5  # Small reward for saving the ball
+                reward += 2  # Sizeable reward for saving the ball
 
             # Paddle collision (AI)
             if ball.rect.colliderect(self.ai_paddle.rect) and ball.vy < 0:
@@ -126,13 +152,26 @@ class BrickPongEnv(gym.Env):
                     if brick.hit():
                         self.bricks.remove(brick)
                         if ball.last_hit_by == "player":
-                            reward += 5  # Big reward for breaking a brick
+                            reward += 5
+                            player_bricks_now += 1
+                        elif ball.last_hit_by == "ai":
+                            reward -= 2
+                            ai_bricks_now += 1
                     ball.vy = -ball.vy
                     break
 
-        # --- Done? ---
+        # Track bricks broken
+        self.player_bricks_broken = player_bricks_now
+        self.ai_bricks_broken = ai_bricks_now
+
+        # Compare bricks broken
+        if player_bricks_now > ai_bricks_now:
+            reward += 20
+        elif player_bricks_now < ai_bricks_now:
+            reward -= 5
+
         terminated = len(self.balls) == 0 or len(self.bricks) == 0 or self.player_balls_lost >= 5 or getattr(self, "done", False)
-        truncated = False  # You can add a max steps limit if you want
+        truncated = False
         info = {"winner": "agent" if len(self.bricks) == 0 else "env"}
         return self._get_obs(), reward, terminated, truncated, info
 
