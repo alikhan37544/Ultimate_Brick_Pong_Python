@@ -68,14 +68,18 @@ class AIPaddle(Paddle):
         super().__init__(x, y)
 
     def update(self, balls):
-        """A simple AI that tracks the closest ball horizontally."""
+        """A simple AI that tracks the closest ball horizontally, with random jitter to avoid getting stuck."""
         if balls:
-            # Choose the ball that is closest vertically to the AI paddle.
             closest_ball = min(balls, key=lambda b: abs(b.rect.centery - self.rect.centery))
-            if closest_ball.rect.centerx < self.rect.centerx:
+            # Add random jitter to AI movement
+            jitter = random.choice([0, -1, 1]) * random.randint(0, 2)
+            if closest_ball.rect.centerx + jitter < self.rect.centerx:
                 self.move(-PADDLE_SPEED)
-            elif closest_ball.rect.centerx > self.rect.centerx:
+            elif closest_ball.rect.centerx + jitter > self.rect.centerx:
                 self.move(PADDLE_SPEED)
+            # Occasionally move randomly even if aligned
+            if random.random() < 0.05:
+                self.move(random.choice([-PADDLE_SPEED, PADDLE_SPEED]))
 
 # Update the Ball class for better physics
 class Ball:
