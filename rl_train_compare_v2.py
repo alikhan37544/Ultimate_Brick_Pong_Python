@@ -5,10 +5,10 @@ from tqdm import tqdm
 import time
 import multiprocessing
 
-from stable_baselines3 import DQN, PPO, A2C, DDPG
+from stable_baselines3 import DQN, PPO, A2C
 from sb3_contrib import QRDQN
 from stable_baselines3.common.evaluation import evaluate_policy
-from stable_baselines3.common.vec_env import DummyVecEnv, VecVideoRecorder
+from stable_baselines3.common.vec_env import DummyVecEnv
 from stable_baselines3.common.monitor import Monitor
 
 from brickpong_gym_env import BrickPongEnv
@@ -26,119 +26,156 @@ algorithms = {
     "QRDQN": QRDQN,
     "PPO": PPO,
     "A2C": A2C,
-    "DDPG": DDPG,  # DDPG is for continuous, but included for completeness (will skip if not supported)
+    # Removed DDPG as it's for continuous action spaces
 }
 
 results = {}
-NUM_TRAIN_STEPS = 30_000  # Lower for demo, increase for real training
+NUM_TRAIN_STEPS = 50_000  # Increase for better learning
 NUM_EVAL_EPISODES = 15
 VIDEO_LENGTH = 500  # Steps to record for video
 
 N_CPUS = multiprocessing.cpu_count()
 
 def make_env():
-    return Monitor(BrickPongEnv(rl_mode=True))
+    # Create environment without render_mode parameter
+    return Monitor(BrickPongEnv(rl_mode=True))  # No rendering during training
 
-def record_video(algo_name, model, env, video_length=VIDEO_LENGTH):
-    # Wrap env for video recording
-    venv = DummyVecEnv([lambda: Monitor(BrickPongEnv())])
-    venv = VecVideoRecorder(
-        venv, VIDEO_DIR, record_video_trigger=lambda x: x == 0,
-        video_length=video_length, name_prefix=f"{algo_name}_agent"
-    )
-    obs = venv.reset()
-    for _ in range(video_length):
+def make_visual_env():
+    # Create environment for visual evaluation/recording
+    return Monitor(BrickPongEnv(rl_mode=False))  
+
+def record_video(algo_name, model, video_length=VIDEO_LENGTH):
+    # Only record video if explicitly needed - it's slow
+    print(f"Recording video for {algo_name}...")
+    
+    # Create a visual environment for recording
+    env = make_visual_env()
+    video_path = os.path.join(VIDEO_DIR, f"{algo_name}_agent.mp4")
+    
+    # Initialize recording
+    import pygame
+    pygame.init()
+    screen = pygame.display.set_mode((1200, 800))
+    pygame.display.set_caption(f"Recording {algo_name} Agent")
+    
+    obs, _ = env.reset()
+    
+    # Create a pygame.movie writer if available
+    try:
+        from pygame.movie import Movie
+        movie = Movie(video_path, (1200, 800))
+        movie_available = True
+    except ImportError:
+        movie_available = False
+        print("pygame.movie not available. Recording frames as screenshots.")
+        if not os.path.exists(VIDEO_DIR):
+            os.makedirs(VIDEO_DIR)
+    
+    # Record steps
+    for step in range(video_length):
         action, _ = model.predict(obs, deterministic=True)
-        obs, _, dones, _ = venv.step(action)
-        if dones[0]:
-            obs = venv.reset()
-    venv.close()
-
-# Training and evaluation loop with tqdm and live plot
-plt.ion()
-fig, axs = plt.subplots(2, 1, figsize=(10, 10))
-reward_lines = {}
-winrate_bars = None
-
-for algo_name, algo_class in algorithms.items():
-    print(f"\n=== Training {algo_name} (visual mode) ===")
-    # Use a single env for visualization
-    env = Monitor(BrickPongEnv(rl_mode=False))
-    model = algo_class("MlpPolicy", env, verbose=0)
-    rewards = []
-    for i in tqdm(range(NUM_TRAIN_STEPS), desc=f"Training {algo_name}", ncols=80):
-        obs, _ = env.reset()
-        done = False
-        total_reward = 0
-        while not done:
-            action, _ = model.predict(obs, deterministic=True)
-            obs, reward, terminated, truncated, info = env.step(action)
-            done = terminated or truncated
-            total_reward += reward
-            env.render()  # Show the game window
-        rewards.append(total_reward)
-    model.save(os.path.join(MODEL_DIR, f"{algo_name}_model"))
+        obs, reward, terminated, truncated, info = env.step(action)
+        done = terminated or truncated
+        
+        env.render()  # This will display the game
+        pygame.display.flip()
+        
+        # Save frame if movie not available - only every 10th frame
+        if not movie_available and step % 10 == 0:
+            pygame.image.save(screen, os.path.join(VIDEO_DIR, f"{algo_name}_step_{step:04d}.png"))
+        
+        if done:
+            obs, _ = env.reset()
+    
     env.close()
+    pygame.quit()
+    print(f"Video recording completed for {algo_name}")
+
+# Set this to True to see visual evaluation, False for maximum speed
+RENDER_EVALUATION = True
+
+# Set this to False to skip video recording for speed
+RECORD_VIDEOS = True
+
+# Main training and evaluation loop
+plt.ion()  # Turn on interactive plotting mode
+fig, axs = plt.subplots(2, 1, figsize=(10, 10))
 
 for algo_name, algo_class in algorithms.items():
     print(f"\n=== Training {algo_name} ===")
-    # Use vectorized environments for parallelism
-    env = DummyVecEnv([make_env for _ in range(N_CPUS)])
-    model = algo_class("MlpPolicy", env, verbose=0)
-    rewards = []
-    pbar = tqdm(total=NUM_TRAIN_STEPS, desc=f"Training {algo_name}", ncols=80)
-    callback_steps = NUM_TRAIN_STEPS // 20  # For live plotting
-
-    # Custom training loop for live progress
-    for i in range(0, NUM_TRAIN_STEPS, callback_steps):
-        model.learn(total_timesteps=callback_steps, reset_num_timesteps=False, progress_bar=False)
-        # Evaluate briefly for live plot
-        mean_reward, _ = evaluate_policy(model, env, n_eval_episodes=3, return_episode_rewards=False)
-        rewards.append(mean_reward)
-        pbar.update(callback_steps)
-        # Live plot
-        axs[0].cla()
-        for name, r in results.items():
-            axs[0].plot(r["live_rewards"], label=name)
-        axs[0].plot(rewards, label=algo_name, linewidth=3)
-        axs[0].set_title("Live Mean Reward During Training")
-        axs[0].set_xlabel("Eval Step")
-        axs[0].set_ylabel("Mean Reward")
-        axs[0].legend()
-        plt.pause(0.01)
-    pbar.close()
-
-    # Save model
-    model.save(os.path.join(MODEL_DIR, f"{algo_name}_model"))
-
-    # Evaluate and record video
+    
+    # Create a vectorized environment for training
+    env = DummyVecEnv([make_env for _ in range(min(N_CPUS, 4))])  # Limit to 4 CPUs to avoid memory issues
+    
+    # Create and train the model
+    model = algo_class("MlpPolicy", env, verbose=1)
+    model.learn(total_timesteps=NUM_TRAIN_STEPS)
+    
+    # Save the trained model
+    model_path = os.path.join(MODEL_DIR, f"{algo_name}_model")
+    model.save(model_path)
+    print(f"Model saved to {model_path}")
+    
+    # Evaluate the model
     print(f"Evaluating {algo_name}...")
-    mean_reward, std_reward = evaluate_policy(model, env, n_eval_episodes=NUM_EVAL_EPISODES, return_episode_rewards=False)
+    eval_env = make_visual_env()
     episode_rewards = []
     win_count = 0
+    
+    # Run evaluation episodes
     for _ in tqdm(range(NUM_EVAL_EPISODES), desc=f"Evaluating {algo_name}", ncols=80):
-        obs = env.reset()
+        obs, _ = eval_env.reset()
         done = False
         total_reward = 0
         while not done:
             action, _ = model.predict(obs, deterministic=True)
-            obs, reward, done, info = env.step(action)
+            
+            obs, reward, terminated, truncated, info = eval_env.step(action)
+            done = terminated or truncated
             total_reward += reward
+            
+            # Only render if explicitly requested
+            if RENDER_EVALUATION:
+                eval_env.render()
+            
         episode_rewards.append(total_reward)
         if "winner" in info and info["winner"] == "agent":
             win_count += 1
-
-    # Record a video of the trained agent
-    print(f"Recording video for {algo_name}...")
-    record_video(algo_name, model, env)
-
+    
+    # Record a video of the trained agent (optional)
+    if RECORD_VIDEOS:
+        record_video(algo_name, model)
+    
+    # Store results
     results[algo_name] = {
         "rewards": episode_rewards,
         "mean_reward": np.mean(episode_rewards),
-        "win_rate": win_count / NUM_EVAL_EPISODES,
-        "live_rewards": rewards
+        "win_rate": win_count / NUM_EVAL_EPISODES
     }
     print(f"{algo_name}: Mean Reward = {results[algo_name]['mean_reward']:.2f}, Win Rate = {results[algo_name]['win_rate']:.2f}")
+    
+    # Update live plot
+    axs[0].cla()
+    for name in results:
+        axs[0].plot(results[name]["rewards"], label=f"{name} (win rate: {results[name]['win_rate']:.2f})")
+    axs[0].set_xlabel("Evaluation Episode")
+    axs[0].set_ylabel("Total Reward")
+    axs[0].set_title("RL Algorithm Comparison: Rewards per Episode")
+    axs[0].legend()
+    axs[0].grid(True)
+    
+    # Update win rate bars
+    axs[1].cla()
+    win_rates = [results[algo]["win_rate"] for algo in results]
+    axs[1].bar(list(results.keys()), win_rates, color='skyblue')
+    axs[1].set_ylabel("Win Rate")
+    axs[1].set_title("RL Algorithm Comparison: Win Rates")
+    axs[1].set_ylim(0, 1)
+    axs[1].grid(axis='y')
+    
+    plt.tight_layout()
+    plt.pause(0.1)
+    plt.savefig(f"rl_comparison_progress_{len(results)}.png")
 
 # Final plots
 plt.ioff()

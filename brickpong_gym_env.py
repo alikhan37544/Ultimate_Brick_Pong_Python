@@ -82,16 +82,19 @@ class BrickPongEnv(gym.Env):
 
     def step(self, action):
         prev_x = self.player_paddle.rect.centerx
-
+        reward = 0.0  # Initialize reward FIRST
+        
         # Move paddle
         if action == 1:
             self.player_paddle.move(-PADDLE_SPEED)
         elif action == 2:
             self.player_paddle.move(PADDLE_SPEED)
 
-        self.ai_paddle.update(self.balls)
+        # Add movement incentive
+        if abs(prev_x - self.player_paddle.rect.centerx) > 0:
+            reward += 0.05  # Stronger incentive to move
 
-        reward = 0.0
+        self.ai_paddle.update(self.balls)
 
         # Penalize hugging the wall
         if self.player_paddle.rect.left <= 0 or self.player_paddle.rect.right >= GAME_WIDTH:
@@ -134,6 +137,7 @@ class BrickPongEnv(gym.Env):
                 ball.rect.bottom = self.player_paddle.rect.top
                 ball.last_hit_by = "player"
                 reward += 0.1
+                reward += 0.5  # Bigger reward for hitting the ball
 
             # Paddle collision (AI)
             if ball.rect.colliderect(self.ai_paddle.rect) and ball.vy < 0:
